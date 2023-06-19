@@ -203,6 +203,52 @@ class Worker():
         result = master
         lock.release()
         return result
+    
+    def answer_broadcast(self):
+        global master
+        change_counter = 0
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.bind(("0.0.0.0", 5005))
+        while True:
+            data, addr = sock.recvfrom(1024)
+            data = data.decode()
+            if addr[0] == local_ip:
+                continue
+            logging.info("recieve {} from {}".format(data, addr))
+            if data == "are you master?":
+                if self.is_master():
+                    sock.sendto(b"i am master", (addr[0], 5006))
+            elif data == "are you replica?":
+                sock.sendto(b"i am replica", (addr[0], 5006))
+            elif data.startswith("REPLICA:"):
+                start = len("REPLICA:")
+                data = json.loads(data[start:])
+                counter = data["idx"]
+                logging.info(f"{counter} / {change_counter}")
+                if counter == change_counter + 1:
+                    do_change(data)
+                    change_counter += 1
+                    answer = json.dumps({"res": "success", "idx": data["idx"]})
+                    sock.sendto(f"{answer}".encode(), (addr[0], 5007)) 
+                elif counter > change_counter + 1:
+                    answer = json.dumps({"res": "needed", "from": change_counter + 1, "to": counter - 1})
+                    sock.sendto(f"{answer}".encode(), (addr[0], 5007))
+                    needed_changes = {change: None for change in range(change_counter + 1, counter)}
+                    needed_changes[counter] = data
+                    for _ in range(change_counter + 1, counter):
+                        data, addr = sock.recvfrom(1024)
+                        logging.info("needed recieve {} from {}".format(data, addr))
+                        data = data.decode()
+                        if data.startswith("REPLICA:"):
+                            start = len("REPLICA:")
+                            data = json.loads(data[start:])
+                            idx = data["idx"]
+                            needed_changes[idx] = data
+                    for i in range(change_counter + 1, counter + 1):
+                        do_change(needed_changes[i])
+                        change_counter += 1
+                    answer = json.dumps({"res": "success", "idx": data["idx"]})
+                    sock.sendto(f"{answer}".encode(), (addr[0], 5007))
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
